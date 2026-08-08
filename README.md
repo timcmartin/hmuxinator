@@ -1,7 +1,8 @@
 # hmuxinator
 
-`tmuxinator`, but for Herdr — launch or focus a named project workspace with
-one command, laid out however you like via a small bash DSL.
+[`tmuxinator`](https://github.com/tmuxinator/tmuxinator), but for Herdr —
+launch or focus a named project workspace with one command, laid out however
+you like via a small bash DSL.
 
 ```sh
 hmux rails-app
