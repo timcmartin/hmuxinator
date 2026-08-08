@@ -21,7 +21,7 @@ focuses it.
 ## Install
 
 ```sh
-git clone <this-repo-url> hmuxinator
+git clone git@gitlab.getty.cloud:tmartin/hmuxinator.git
 cd hmuxinator
 ./install.sh
 ```
