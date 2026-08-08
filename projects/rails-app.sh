@@ -2,11 +2,11 @@
 ROOT="$HOME/code/rails-app"
 
 # --- Tab: app ---
-tab_new     app
-pane_new    nvim "nvim"
-pane_split  right "" term ""
+tab_new app
+pane_new nvim "nvim"
+pane_split right "" term ""
 
 # --- Tab: servers ---
-tab_new     servers
-pane_new    rails  "bin/rails server"
-pane_split  right "" assets "bin/dev"
+tab_new servers
+pane_new rails "bundle exec rails s"
+pane_split right "" assets "pnpm dev"
