@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# hmux <project>
+#
+# Launch or focus a Herdr workspace by name — the tmuxinator analog for the
+# Model-B (single-session, workspace-per-project) Herdr flow.
+#
+# If a workspace with <project> as its label already exists, focus it and
+# exit. Otherwise create a fresh workspace, apply the layout defined at
+# ~/.config/herdr/projects/<project>.sh (if present), and focus it.
+#
+# See projects/README.md (in this repo) for the layout-file DSL.
+
+set -euo pipefail
+
+PROJECT_NAME="${1:-}"
+if [[ -z "$PROJECT_NAME" ]]; then
+  echo "Usage: hmux <project>" >&2
+  exit 2
+fi
+
+die() { echo "hmux: $*" >&2; exit 1; }
+
+command -v herdr >/dev/null || die "missing dependency: herdr"
+command -v jq    >/dev/null || die "missing dependency: jq"
+
+status_output="$(herdr status 2>/dev/null || true)"
+[[ "$status_output" == *"status: running"* ]] \
+  || die "Herdr server not running. Launch it with \`herdr\` first."
+
+# --- Focus existing workspace if present ---------------------------------
+existing_id="$(herdr workspace list \
+  | jq -r --arg label "$PROJECT_NAME" \
+      '.result.workspaces[] | select(.label==$label) | .workspace_id' \
+  | head -n1)"
+
+if [[ -n "$existing_id" ]]; then
+  herdr workspace focus "$existing_id" >/dev/null
+  echo "hmux: focused existing workspace $PROJECT_NAME ($existing_id)"
+  exit 0
+fi
+
+# --- Resolve project layout ----------------------------------------------
+LAYOUT_FILE="$HOME/.config/herdr/projects/$PROJECT_NAME.sh"
+ROOT=""
+declare -a PANE_ACTIONS=()
+
+# Layout DSL: layout files call these functions. We capture the calls into
+# PANE_ACTIONS and replay them once we know the workspace's root pane id.
+pane_new() {
+  # pane_new [label] <command>
+  if [[ $# -eq 1 ]]; then
+    PANE_ACTIONS+=("new::$1")
+  else
+    PANE_ACTIONS+=("new:$1:$2")
+  fi
+}
+pane_split() {
+  # pane_split <direction> <ratio> <label> <command>
+  #   direction: right | down
+  #   ratio:     "" or 0.0-1.0
+  local direction="${1:-right}" ratio="${2:-}" label="${3:-}" cmd="${4:-}"
+  PANE_ACTIONS+=("split:$direction:$ratio:$label:$cmd")
+}
+tab_new() {
+  # tab_new <label>
+  # Starts a new tab in the current workspace. Subsequent pane_new /
+  # pane_split calls target this tab until the next tab_new. The first
+  # pane_new after a tab_new populates the tab's auto-created root pane.
+  PANE_ACTIONS+=("tab:$1")
+}
+
+if [[ -f "$LAYOUT_FILE" ]]; then
+  # shellcheck source=/dev/null
+  source "$LAYOUT_FILE"
+fi
+
+# Fallback root: $HMUX_DEFAULT_ROOT/<project> if that directory exists
+# (set HMUX_DEFAULT_ROOT to your projects root, e.g. `export
+# HMUX_DEFAULT_ROOT="$HOME/src"` in your shell rc), else $HOME.
+if [[ -z "$ROOT" ]]; then
+  if [[ -n "${HMUX_DEFAULT_ROOT:-}" && -d "$HMUX_DEFAULT_ROOT/$PROJECT_NAME" ]]; then
+    ROOT="$HMUX_DEFAULT_ROOT/$PROJECT_NAME"
+  else
+    ROOT="$HOME"
+  fi
+fi
+# Expand leading ~ if the layout file wrote one literally.
+ROOT="${ROOT/#\~/$HOME}"
+
+# --- Create the workspace ------------------------------------------------
+create_json="$(herdr workspace create --cwd "$ROOT" --label "$PROJECT_NAME" --focus)"
+workspace_id="$(jq -r '.result.workspace.workspace_id' <<<"$create_json")"
+root_pane_id="$(jq -r '.result.root_pane.pane_id' <<<"$create_json")"
+echo "hmux: created workspace $PROJECT_NAME ($workspace_id) rooted at $ROOT"
+
+# --- Apply layout --------------------------------------------------------
+parent_pane="$root_pane_id"
+first_pane=1
+
+apply_pane() {
+  local target_pane="$1" label="$2" cmd="$3"
+  [[ -n "$label" ]] && herdr pane rename "$target_pane" "$label" >/dev/null
+  [[ -n "$cmd"   ]] && herdr pane run    "$target_pane" "$cmd"   >/dev/null
+  return 0
+}
+
+for action in "${PANE_ACTIONS[@]}"; do
+  IFS=':' read -r kind arg1 arg2 arg3 arg4 <<<"$action"
+  case "$kind" in
+    tab)
+      label="$arg1"
+      if (( first_pane )) && [[ "$parent_pane" == "$root_pane_id" ]]; then
+        # First action is a tab_new — rename the auto-created initial tab
+        # instead of spawning a fresh one.
+        initial_tab_id="$(herdr pane get "$root_pane_id" \
+          | jq -r '.result.pane.tab_id')"
+        [[ -n "$label" ]] && herdr tab rename "$initial_tab_id" "$label" >/dev/null
+        # Guard against set -e firing when $label is empty and && short-circuits.
+        :
+      else
+        # Create a new tab; its auto-created root pane becomes the parent
+        # for subsequent pane_new / pane_split calls.
+        tab_json="$(herdr tab create --workspace "$workspace_id" --cwd "$ROOT" ${label:+--label "$label"})"
+        new_tab_id="$(jq -r '.result.tab.tab_id' <<<"$tab_json")"
+        parent_pane="$(herdr pane list --workspace "$workspace_id" \
+          | jq -r --arg t "$new_tab_id" \
+              '.result.panes[] | select(.tab_id==$t) | .pane_id' \
+          | head -n1)"
+        first_pane=1
+      fi
+      ;;
+    new)
+      # First pane_new in a tab maps to that tab's root pane; subsequent
+      # `new` calls behave like a plain right-split.
+      label="$arg1"; cmd="$arg2"
+      if (( first_pane )); then
+        apply_pane "$parent_pane" "$label" "$cmd"
+      else
+        split_json="$(herdr pane split "$parent_pane" --direction right --cwd "$ROOT")"
+        target_pane="$(jq -r '.result.pane.pane_id' <<<"$split_json")"
+        apply_pane "$target_pane" "$label" "$cmd"
+        parent_pane="$target_pane"
+      fi
+      first_pane=0
+      ;;
+    split)
+      direction="$arg1"; ratio="$arg2"; label="$arg3"; cmd="$arg4"
+      split_args=(--direction "$direction" --cwd "$ROOT")
+      [[ -n "$ratio" ]] && split_args+=(--ratio "$ratio")
+      split_json="$(herdr pane split "$parent_pane" "${split_args[@]}")"
+      target_pane="$(jq -r '.result.pane.pane_id' <<<"$split_json")"
+      apply_pane "$target_pane" "$label" "$cmd"
+      parent_pane="$target_pane"
+      ;;
+  esac
+done
+
+# Focus the workspace's first tab so the user lands at the top on open.
+first_tab="$(herdr tab list --workspace "$workspace_id" \
+  | jq -r '.result.tabs | sort_by(.number) | .[0].tab_id')"
+[[ -n "$first_tab" ]] && herdr tab focus "$first_tab" >/dev/null 2>&1 || true
