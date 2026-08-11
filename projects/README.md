@@ -41,6 +41,51 @@ pane_split  right "" assets "bin/dev"
 Result: two tabs — `app` (editor + blank terminal, 60/40 split) and
 `servers` (Rails server + asset watcher, 60/40 split).
 
+## Git worktrees
+
+Layout files are sourced as plain bash, so a layout can *compute* paths
+instead of hardcoding them. That helps when a repo is checked out as a
+container directory holding one subdirectory per worktree:
+
+```
+~/code/myapp/
+  main/
+  feature-a/
+  feature-b/
+```
+
+Set `ROOT` to the container, then pick the worktree to work in at
+workspace-creation time:
+
+```sh
+ROOT="$HOME/code/myapp"
+MAIN="$ROOT/main"
+
+FEATURE=""
+for _wt in "$ROOT"/*/; do
+  _wt="${_wt%/}"
+  [ "$_wt" = "$MAIN" ] && continue
+  [ -e "$_wt/.git" ] || continue
+  if [ -z "$FEATURE" ] || [ "$_wt" -nt "$FEATURE" ]; then
+    FEATURE="$_wt"
+  fi
+done
+WORK="${FEATURE:-$MAIN}"
+
+tab_new     main
+pane_new    nvim "cd $MAIN && nvim"
+pane_split  right "" term "cd $MAIN"
+
+tab_new     feature
+pane_new    nvim "cd $WORK && nvim"
+pane_split  right "" term "cd $WORK"
+```
+
+Panes are created with `--cwd "$ROOT"`, so each pane command needs its own
+`cd` into the worktree it belongs to. See `worktrees.sh` for the full
+sample. Detection runs only when the workspace is created, so close and
+re-open the workspace after adding or switching worktrees.
+
 ## Notes
 
 - Commands run via `herdr pane run`, which types them into the pane's shell.

@@ -53,7 +53,9 @@ Two options:
    [`projects/README.md`](projects/README.md) for the full DSL reference.
 
 Sample layouts included to start from: [`rails-app.sh`](projects/rails-app.sh),
-[`node-app.sh`](projects/node-app.sh), [`multi-repo.sh`](projects/multi-repo.sh).
+[`node-app.sh`](projects/node-app.sh), [`multi-repo.sh`](projects/multi-repo.sh),
+[`worktrees.sh`](projects/worktrees.sh) (a repo split across git worktrees,
+with the feature worktree detected at workspace-creation time).
 
 ## `HMUX_DEFAULT_ROOT`
 
